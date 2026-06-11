@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+env/
+output/images/*
+output/audio/*
+output/videos/*
+!output/images/.gitkeep
+!output/audio/.gitkeep
+!output/videos/.gitkeep
+*.temp-audio.m4a

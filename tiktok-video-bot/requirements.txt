@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-telegram-bot
+google-genai
+python-dotenv
+gTTS
+moviepy
+pillow
+aiofiles
+requests
