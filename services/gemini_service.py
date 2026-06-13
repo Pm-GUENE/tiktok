@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import re
+from threading import Lock
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -19,11 +20,45 @@ logger = logging.getLogger(__name__)
 
 TEXT_MODEL = "gemini-2.5-flash"
 IMAGE_MODEL = "gemini-3.1-flash-image"
+_GEMINI_CLIENT: genai.Client | None = None
+_CLIENT_LOCK = Lock()
 
 
 def _client() -> genai.Client:
+    global _GEMINI_CLIENT
     settings.validate_required()
-    return genai.Client(api_key=settings.GEMINI_API_KEY)
+    with _CLIENT_LOCK:
+        if _GEMINI_CLIENT is None:
+            _GEMINI_CLIENT = genai.Client(api_key=settings.GEMINI_API_KEY)
+        return _GEMINI_CLIENT
+
+
+def _reset_client() -> None:
+    global _GEMINI_CLIENT
+    with _CLIENT_LOCK:
+        client = _GEMINI_CLIENT
+        _GEMINI_CLIENT = None
+    if client and hasattr(client, "close"):
+        try:
+            client.close()
+        except Exception:
+            logger.debug("Gemini client close failed during reset.", exc_info=True)
+
+
+def _generate_content(model: str, contents: str, config: types.GenerateContentConfig):
+    for attempt in range(2):
+        try:
+            return _client().models.generate_content(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+        except RuntimeError as exc:
+            if "client has been closed" in str(exc).lower() and attempt == 0:
+                logger.warning("Gemini client was closed; resetting client and retrying once.")
+                _reset_client()
+                continue
+            raise
 
 
 def generate_video_plan(topic: str) -> dict:
@@ -69,7 +104,7 @@ Contraintes:
 """
 
     def request() -> dict:
-        response = _client().models.generate_content(
+        response = _generate_content(
             model=TEXT_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json"),
@@ -111,7 +146,7 @@ async def generate_scene_images(video_plan: dict, output_dir: str, progress_call
 
 def _generate_single_image(prompt: str, output_path: str, subtitle: str, scene_number: int) -> str:
     try:
-        response = _client().models.generate_content(
+        response = _generate_content(
             model=IMAGE_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(
