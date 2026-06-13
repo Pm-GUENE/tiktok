@@ -22,6 +22,7 @@ TEXT_MODEL = "gemini-2.5-flash"
 IMAGE_MODEL = "gemini-3.1-flash-image"
 _GEMINI_CLIENT: genai.Client | None = None
 _CLIENT_LOCK = Lock()
+_IMAGE_GENERATION_DISABLED = False
 
 
 def _client() -> genai.Client:
@@ -120,6 +121,7 @@ Contraintes:
 
 
 async def generate_scene_images(video_plan: dict, output_dir: str, progress_callback=None) -> list[str]:
+    global _IMAGE_GENERATION_DISABLED
     scenes = _normalize_scenes(video_plan.get("scenes") or [], video_plan.get("title", "Conseil TikTok"))
     total = len(scenes)
     image_paths: list[str] = []
@@ -135,16 +137,29 @@ async def generate_scene_images(video_plan: dict, output_dir: str, progress_call
         def fallback() -> str:
             return create_fallback_image(subtitle, str(output_path), index)
 
+        if _IMAGE_GENERATION_DISABLED:
+            image_paths.append(fallback())
+            continue
+
         def request() -> str:
             return _generate_single_image(prompt, str(output_path), subtitle, index)
 
-        image_path = await asyncio.to_thread(gemini_rate_limiter.call, request, fallback)
+        try:
+            image_path = await asyncio.to_thread(gemini_rate_limiter.call, request, fallback)
+        except Exception as exc:
+            if gemini_rate_limiter._is_permanent_error(exc):
+                logger.warning("Disabling Gemini image generation for this process. Using fallback images.")
+                _IMAGE_GENERATION_DISABLED = True
+                image_path = fallback()
+            else:
+                raise
         image_paths.append(image_path)
 
     return image_paths
 
 
 def _generate_single_image(prompt: str, output_path: str, subtitle: str, scene_number: int) -> str:
+    global _IMAGE_GENERATION_DISABLED
     try:
         response = _generate_content(
             model=IMAGE_MODEL,
@@ -163,6 +178,9 @@ def _generate_single_image(prompt: str, output_path: str, subtitle: str, scene_n
         image.save(output_path, "JPEG", quality=88, optimize=True)
         return output_path
     except Exception as exc:
+        if gemini_rate_limiter._is_permanent_error(exc):
+            _IMAGE_GENERATION_DISABLED = True
+            raise
         if gemini_rate_limiter._is_rate_limit_error(exc):
             raise
         logger.exception("Image generation failed for scene %s. Using fallback.", scene_number)

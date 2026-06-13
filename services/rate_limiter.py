@@ -21,6 +21,11 @@ class GeminiRateLimiter:
             try:
                 return func()
             except Exception as exc:
+                if self._is_permanent_error(exc):
+                    logger.warning("Gemini unavailable for this project/key. Using fallback. Reason: %s", exc)
+                    if fallback:
+                        return fallback()
+                    raise
                 if self._is_rate_limit_error(exc):
                     logger.warning("Gemini rate limit error on attempt %s/%s: %s", attempt, self.max_retries, exc)
                     time.sleep(60)
@@ -47,6 +52,18 @@ class GeminiRateLimiter:
     def _is_rate_limit_error(exc: Exception) -> bool:
         text = str(exc).lower()
         return "429" in text or "rate limit" in text or "resource exhausted" in text or "quota" in text
+
+    @staticmethod
+    def _is_permanent_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return (
+            "403" in text
+            or "permission_denied" in text
+            or "denied access" in text
+            or "api key not valid" in text
+            or "limit: 0" in text
+            or "generate_requestsperdayperprojectpermodel-freetier" in text
+        )
 
 
 gemini_rate_limiter = GeminiRateLimiter()
