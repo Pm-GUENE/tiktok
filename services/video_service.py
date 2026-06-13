@@ -2,10 +2,6 @@ import logging
 import math
 from pathlib import Path
 
-try:
-    import moviepy.editor as mp
-except ModuleNotFoundError:
-    import moviepy as mp
 from PIL import Image, ImageDraw, ImageFont
 
 from app.config import settings
@@ -13,6 +9,7 @@ from app.utils import unique_file_path
 from services.subtitle_service import split_script_into_subtitles
 
 logger = logging.getLogger(__name__)
+_MP = None
 
 
 def create_tiktok_video(
@@ -26,6 +23,7 @@ def create_tiktok_video(
     if not scene_images:
         raise RuntimeError("Aucune image disponible pour créer la vidéo.")
 
+    mp = _load_moviepy()
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     voice = mp.AudioFileClip(audio_path)
     duration = float(voice.duration or settings.TARGET_DURATION_SECONDS)
@@ -47,14 +45,14 @@ def create_tiktok_video(
     video = _with_duration(mp.concatenate_videoclips(clips, method="compose"), duration)
 
     overlays = []
-    title_overlay = create_text_overlay(title, position="title")
+    title_overlay = create_text_overlay(title, width=width, height=height, position="title")
     title_clip = mp.ImageClip(title_overlay)
     title_clip = _with_position(title_clip, ("center", 180))
     title_clip = _with_start(_with_duration(title_clip, min(2.6, duration)), 0)
     overlays.append(title_clip)
 
     for subtitle in split_script_into_subtitles(script, duration, max_words=7):
-        overlay_path = create_text_overlay(subtitle["text"], position="bottom")
+        overlay_path = create_text_overlay(subtitle["text"], width=width, height=height, position="bottom")
         overlay = mp.ImageClip(overlay_path)
         overlay = _with_position(overlay, ("center", int(height * 0.68)))
         overlay = _with_start(overlay, subtitle["start"])
@@ -69,7 +67,7 @@ def create_tiktok_video(
         try:
             music = _with_volume(mp.AudioFileClip(music_path), 0.1)
             if music.duration < duration:
-                music = _loop_audio(music, duration)
+                music = _loop_audio(music, duration, mp)
             else:
                 music = _subclip(music, 0, duration)
             music = _audio_fadeout(music, 1.0)
@@ -87,10 +85,10 @@ def create_tiktok_video(
             fps=settings.VIDEO_FPS,
             codec="libx264",
             audio_codec="aac",
-            preset="medium",
-            bitrate="1500k",
+            preset="veryfast",
+            bitrate="1200k",
             audio_bitrate="128k",
-            threads=2,
+            threads=1,
             logger=None,
             temp_audiofile=str(Path(output_path).with_suffix(".temp-audio.m4a")),
             remove_temp=True,
@@ -102,6 +100,18 @@ def create_tiktok_video(
         _close_clips([final, mixed_audio, *audio_clips_to_close, video, *overlays, *clips, voice])
 
     return output_path
+
+
+def _load_moviepy():
+    global _MP
+    if _MP is not None:
+        return _MP
+    try:
+        import moviepy.editor as moviepy_module
+    except ModuleNotFoundError:
+        import moviepy as moviepy_module
+    _MP = moviepy_module
+    return _MP
 
 
 def _with_duration(clip, duration: float):
@@ -152,7 +162,7 @@ def _with_volume(clip, factor: float):
     return clip.volumex(factor)
 
 
-def _loop_audio(audio, duration: float):
+def _loop_audio(audio, duration: float, mp):
     if not audio.duration or audio.duration <= 0:
         return _with_duration(audio, duration)
     loop_count = max(1, math.ceil(duration / audio.duration))
@@ -168,13 +178,15 @@ def _audio_fadeout(audio, seconds: float):
 
 def create_text_overlay(
     text: str,
-    width: int = 1080,
-    height: int = 1920,
+    width: int | None = None,
+    height: int | None = None,
     position: str = "bottom",
 ) -> str:
+    width = width or settings.VIDEO_WIDTH
+    height = height or settings.VIDEO_HEIGHT
     output_path = unique_file_path(settings.VIDEO_DIR, ".png")
     is_title = position == "title"
-    font_size = 72 if is_title else 58
+    font_size = max(38, min(64, int(width * (0.084 if is_title else 0.068))))
     font = _load_font(font_size)
     max_width = width - 150
     lines = _wrap_lines(text, font, max_width, max_lines=4 if is_title else 3)

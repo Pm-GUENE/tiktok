@@ -22,8 +22,10 @@ class Settings:
     FONTS_DIR = ASSETS_DIR / "fonts"
     BACKGROUNDS_DIR = ASSETS_DIR / "backgrounds"
 
-    VIDEO_WIDTH = 1080
-    VIDEO_HEIGHT = 1920
+    # Render Free has a 512 MB RAM limit. 720p keeps TikTok's 9:16 format
+    # while avoiding the memory spikes caused by 18 full-HD MoviePy clips.
+    VIDEO_WIDTH = 720
+    VIDEO_HEIGHT = 1280
     VIDEO_FPS = 24
     TARGET_DURATION_SECONDS = 62
     MAX_TOPIC_LENGTH = 250
