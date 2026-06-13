@@ -113,8 +113,15 @@ Contraintes:
         text = getattr(response, "text", "") or ""
         return _parse_video_plan(text, topic)
 
+    def fallback(exc: Exception | None = None) -> dict:
+        global _IMAGE_GENERATION_DISABLED
+        if exc and gemini_rate_limiter._is_permanent_error(exc):
+            _IMAGE_GENERATION_DISABLED = True
+            logger.warning("Gemini image generation disabled because the Gemini project/key is unavailable.")
+        return fallback_video_plan(topic)
+
     try:
-        return gemini_rate_limiter.call(request, fallback=lambda: fallback_video_plan(topic))
+        return gemini_rate_limiter.call(request, fallback=fallback)
     except Exception:
         logger.exception("Gemini video plan generation failed. Using fallback plan.")
         return fallback_video_plan(topic)
@@ -141,11 +148,17 @@ async def generate_scene_images(video_plan: dict, output_dir: str, progress_call
             image_paths.append(fallback())
             continue
 
+        def permanent_fallback(exc: Exception | None = None) -> str:
+            global _IMAGE_GENERATION_DISABLED
+            _IMAGE_GENERATION_DISABLED = True
+            logger.warning("Gemini image generation disabled for this process. Using fallback images.")
+            return fallback()
+
         def request() -> str:
             return _generate_single_image(prompt, str(output_path), subtitle, index)
 
         try:
-            image_path = await asyncio.to_thread(gemini_rate_limiter.call, request, fallback)
+            image_path = await asyncio.to_thread(gemini_rate_limiter.call, request, permanent_fallback)
         except Exception as exc:
             if gemini_rate_limiter._is_permanent_error(exc):
                 logger.warning("Disabling Gemini image generation for this process. Using fallback images.")

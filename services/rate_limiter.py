@@ -1,4 +1,5 @@
 import logging
+import inspect
 import threading
 import time
 from collections.abc import Callable
@@ -22,22 +23,27 @@ class GeminiRateLimiter:
                 return func()
             except Exception as exc:
                 if self._is_permanent_error(exc):
-                    logger.warning("Gemini unavailable for this project/key. Using fallback. Reason: %s", exc)
+                    logger.warning("Gemini unavailable for this project/key. Using fallback. Reason: %s", self._short_error(exc))
                     if fallback:
-                        return fallback()
+                        return self._call_fallback(fallback, exc)
                     raise
                 if self._is_rate_limit_error(exc):
-                    logger.warning("Gemini rate limit error on attempt %s/%s: %s", attempt, self.max_retries, exc)
+                    logger.warning(
+                        "Gemini rate limit error on attempt %s/%s: %s",
+                        attempt,
+                        self.max_retries,
+                        self._short_error(exc),
+                    )
                     time.sleep(60)
                     continue
                 logger.exception("Gemini request failed.")
                 if fallback:
-                    return fallback()
+                    return self._call_fallback(fallback, exc)
                 raise
 
         logger.error("Gemini request failed after rate-limit retries.")
         if fallback:
-            return fallback()
+            return self._call_fallback(fallback, None)
         raise RuntimeError("Gemini rate limit retries exhausted.")
 
     def _wait_turn(self) -> None:
@@ -64,6 +70,27 @@ class GeminiRateLimiter:
             or "limit: 0" in text
             or "generate_requestsperdayperprojectpermodel-freetier" in text
         )
+
+    @staticmethod
+    def _short_error(exc: Exception) -> str:
+        text = " ".join(str(exc).split())
+        status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
+        if status:
+            return f"{status} {text[:180]}"
+        if "permission_denied" in text.lower():
+            return "403 PERMISSION_DENIED"
+        if "limit: 0" in text.lower():
+            return "quota limit is 0 for this model"
+        if "resource_exhausted" in text.lower() or "429" in text:
+            return "429 RESOURCE_EXHAUSTED"
+        return text[:220]
+
+    @staticmethod
+    def _call_fallback(fallback: Callable[..., T], exc: Exception | None) -> T:
+        parameters = inspect.signature(fallback).parameters
+        if parameters:
+            return fallback(exc)
+        return fallback()
 
 
 gemini_rate_limiter = GeminiRateLimiter()
