@@ -74,15 +74,15 @@ class GeminiRateLimiter:
     @staticmethod
     def _short_error(exc: Exception) -> str:
         text = " ".join(str(exc).split())
-        status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
-        if status:
-            return f"{status} {text[:180]}"
         if "permission_denied" in text.lower():
             return "403 PERMISSION_DENIED"
         if "limit: 0" in text.lower():
             return "quota limit is 0 for this model"
         if "resource_exhausted" in text.lower() or "429" in text:
             return "429 RESOURCE_EXHAUSTED"
+        status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
+        if status:
+            return str(status)
         return text[:220]
 
     @staticmethod
