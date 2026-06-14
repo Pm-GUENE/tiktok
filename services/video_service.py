@@ -13,33 +13,27 @@ _MP = None
 
 
 def create_tiktok_video(
-    title: str,
-    script: str,
-    scene_images: list[str],
+    video_plan: dict,
+    prepared_media: list[dict],
     audio_path: str,
     output_path: str,
     music_path: str | None = None,
 ) -> str:
-    if not scene_images:
-        raise RuntimeError("Aucune image disponible pour créer la vidéo.")
+    if not prepared_media:
+        raise RuntimeError("Aucun média disponible pour créer la vidéo.")
 
     mp = _load_moviepy()
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     voice = mp.AudioFileClip(audio_path)
     duration = float(voice.duration or settings.TARGET_DURATION_SECONDS)
     width, height = settings.VIDEO_WIDTH, settings.VIDEO_HEIGHT
+    script = video_plan.get("script", "")
+    title = video_plan.get("title", "Vidéo TikTok")
 
     clips = []
-    scene_duration = duration / len(scene_images)
-    for index, image_path in enumerate(scene_images):
-        clip = (
-            mp.ImageClip(image_path)
-        )
-        clip = _with_duration(clip, scene_duration)
-        clip = _resized(clip, height=height)
-        clip = _cropped(clip, x_center=width / 2, y_center=height / 2, width=width, height=height)
-        clip = _resized(clip, lambda t, base=1.0: base + 0.025 * (t / max(scene_duration, 0.1)))
-        clip = _cropped(clip, x_center=width / 2, y_center=height / 2, width=width, height=height)
+    scene_duration = duration / len(prepared_media)
+    for index, media in enumerate(prepared_media):
+        clip = _make_media_clip(mp, media, scene_duration, width, height, index)
         clips.append(clip)
 
     video = _with_duration(mp.concatenate_videoclips(clips, method="compose"), duration)
@@ -114,6 +108,30 @@ def _load_moviepy():
     return _MP
 
 
+def _make_media_clip(mp, media: dict, scene_duration: float, width: int, height: int, index: int):
+    path = media.get("prepared_path")
+    if not path:
+        raise RuntimeError("Prepared media path is missing.")
+
+    if media.get("prepared_type") == "video":
+        clip = mp.VideoFileClip(path)
+        clip = _without_audio(clip)
+        if float(clip.duration or 0) > scene_duration:
+            start = 0
+            if clip.duration and clip.duration > scene_duration + 1:
+                start = min((index % 3) * 0.7, max(0, clip.duration - scene_duration))
+            clip = _subclip(clip, start, start + scene_duration)
+        else:
+            clip = _with_duration(clip, scene_duration)
+    else:
+        clip = mp.ImageClip(path)
+        clip = _with_duration(clip, scene_duration)
+        clip = _resized(clip, lambda t: 1.0 + 0.03 * (t / max(scene_duration, 0.1)))
+
+    clip = _cover_resize_crop(clip, width, height)
+    return _with_duration(clip, scene_duration)
+
+
 def _with_duration(clip, duration: float):
     if hasattr(clip, "with_duration"):
         return clip.with_duration(duration)
@@ -132,6 +150,12 @@ def _with_audio(clip, audio):
     return clip.set_audio(audio)
 
 
+def _without_audio(clip):
+    if hasattr(clip, "without_audio"):
+        return clip.without_audio()
+    return clip.set_audio(None)
+
+
 def _with_position(clip, position):
     if hasattr(clip, "with_position"):
         return clip.with_position(position)
@@ -148,6 +172,18 @@ def _cropped(clip, *args, **kwargs):
     if hasattr(clip, "cropped"):
         return clip.cropped(*args, **kwargs)
     return clip.crop(*args, **kwargs)
+
+
+def _cover_resize_crop(clip, width: int, height: int):
+    source_w = getattr(clip, "w", None) or getattr(clip, "size", [width, height])[0]
+    source_h = getattr(clip, "h", None) or getattr(clip, "size", [width, height])[1]
+    source_ratio = source_w / source_h
+    target_ratio = width / height
+    if source_ratio > target_ratio:
+        clip = _resized(clip, height=height)
+    else:
+        clip = _resized(clip, width=width)
+    return _cropped(clip, x_center=clip.w / 2, y_center=clip.h / 2, width=width, height=height)
 
 
 def _subclip(clip, start: float, end: float):
@@ -184,7 +220,7 @@ def create_text_overlay(
 ) -> str:
     width = width or settings.VIDEO_WIDTH
     height = height or settings.VIDEO_HEIGHT
-    output_path = unique_file_path(settings.VIDEO_DIR, ".png")
+    output_path = unique_file_path(settings.OVERLAY_OUTPUT_DIR, ".png")
     is_title = position == "title"
     font_size = max(38, min(64, int(width * (0.084 if is_title else 0.068))))
     font = _load_font(font_size)

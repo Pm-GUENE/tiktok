@@ -11,16 +11,21 @@ class Settings:
 
     TELEGRAM_BOT_TOKEN: str | None = None
     GEMINI_API_KEY: str | None = None
+    PEXELS_API_KEY: str | None = None
+    PIXABAY_API_KEY: str | None = None
     PUBLIC_URL: str | None = None
 
     OUTPUT_DIR = BASE_DIR / "output"
     IMAGE_DIR = OUTPUT_DIR / "images"
+    MEDIA_DIR = OUTPUT_DIR / "media"
     AUDIO_DIR = OUTPUT_DIR / "audio"
+    OVERLAY_OUTPUT_DIR = OUTPUT_DIR / "overlays"
     VIDEO_DIR = OUTPUT_DIR / "videos"
     ASSETS_DIR = BASE_DIR / "assets"
     MUSIC_DIR = ASSETS_DIR / "music"
     FONTS_DIR = ASSETS_DIR / "fonts"
     BACKGROUNDS_DIR = ASSETS_DIR / "backgrounds"
+    OVERLAYS_DIR = ASSETS_DIR / "overlays"
 
     # Render Free has a 512 MB RAM limit. 720p keeps TikTok's 9:16 format
     # while avoiding the memory spikes caused by 18 full-HD MoviePy clips.
@@ -35,6 +40,8 @@ class Settings:
 
         self.TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
         self.GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+        self.PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
+        self.PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY")
         self.PUBLIC_URL = os.getenv("PUBLIC_URL")
 
     @property
@@ -55,6 +62,10 @@ class Settings:
                 "Variables d'environnement manquantes: "
                 + ", ".join(missing)
                 + ". Configure-les sur Render ou dans un fichier .env local."
+            )
+        if not self.PEXELS_API_KEY and not self.PIXABAY_API_KEY:
+            raise RuntimeError(
+                "Au moins une clé média est requise: PEXELS_API_KEY ou PIXABAY_API_KEY."
             )
 
 

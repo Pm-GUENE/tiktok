@@ -1,35 +1,38 @@
 import asyncio
 import logging
 from pathlib import Path
+import uuid
 
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app.config import settings
+from app.queue_manager import GenerationJob, generation_queue
 from app.utils import (
     cleanup_old_outputs,
     ensure_directories,
     extract_topic,
     find_background_music,
     is_topic_too_long,
-    unique_file_path,
 )
-from services.gemini_service import generate_scene_images, generate_video_plan
+from services.gemini_service import generate_video_plan
+from services.media_processing_service import cleanup_job_files, prepare_selected_media
+from services.media_search_service import MediaSearchClient
+from services.media_selection_service import select_best_media_for_scenes
 from services.video_service import create_tiktok_video
 from services.voice_service import generate_voice
 
 logger = logging.getLogger(__name__)
 
 application: Application | None = None
-active_generations: dict[int, str] = {}
-generation_lock = asyncio.Lock()
 
 
 async def initialize_bot() -> None:
     app = get_application()
     await app.initialize()
     await app.start()
+    generation_queue.start(_generate_and_send_video)
     await app.bot.set_webhook(settings.webhook_url, drop_pending_updates=True)
     logger.info("Telegram webhook set to %s", settings.webhook_url)
 
@@ -38,6 +41,7 @@ async def shutdown_bot() -> None:
     if application is None:
         return
     try:
+        await generation_queue.stop()
         await application.stop()
         await application.shutdown()
     except Exception:
@@ -51,7 +55,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Bonjour 👋\n"
         "Envoie-moi un sujet comme ceci :\n\n"
         "Sujet : comment choisir un bon ordinateur portable d’occasion au Sénégal\n\n"
-        "Je vais te générer une vidéo TikTok verticale d’environ 1 min 02 s, prête à publier."
+        "Je vais créer une vidéo TikTok verticale d’environ 1 min 02 s avec des visuels cohérents, une voix française et des sous-titres."
     )
 
 
@@ -62,7 +66,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
     raw_text = update.message.text or ""
 
-    if user_id in active_generations:
+    if generation_queue.is_user_active(user_id):
         await update.message.reply_text(
             "⏳ Une vidéo est déjà en cours de génération. Attends la fin avant d’envoyer un nouveau sujet."
         )
@@ -77,86 +81,83 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Envoie-moi un sujet valide, par exemple : Sujet : acheter un PC au Sénégal")
         return
 
-    active_generations[user_id] = "queued"
     await update.message.reply_text("✅ Sujet reçu. Je prépare la vidéo...")
-    asyncio.create_task(_generate_and_send_video(update, context, topic, user_id))
-
-
-async def _generate_and_send_video(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    topic: str,
-    user_id: int,
-) -> None:
+    if generation_queue.has_running_job():
+        await update.message.reply_text("⏳ Une autre vidéo est en cours de génération. Ton sujet a été ajouté à la file d’attente.")
     chat_id = update.effective_chat.id if update.effective_chat else user_id
+    await generation_queue.enqueue(GenerationJob(user_id=user_id, chat_id=chat_id, topic=topic, context=context))
+
+
+async def _generate_and_send_video(job: GenerationJob) -> None:
+    context = job.context
+    chat_id = job.chat_id
+    job_id = uuid.uuid4().hex
+    audio_path: Path | None = None
+    output_path: Path | None = None
+    job_media_dir = settings.MEDIA_DIR / job_id
 
     try:
-        async with generation_lock:
-            active_generations[user_id] = "running"
-            ensure_directories()
-            cleanup_old_outputs()
+        ensure_directories()
+        cleanup_old_outputs()
 
-            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-            await context.bot.send_message(chat_id=chat_id, text="📝 Génération du script long...")
-            video_plan = await asyncio.to_thread(generate_video_plan, topic)
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        await context.bot.send_message(chat_id=chat_id, text="📝 Génération du script et du plan visuel...")
+        video_plan = await asyncio.to_thread(generate_video_plan, job.topic)
 
-            await context.bot.send_message(chat_id=chat_id, text="🎨 Préparation des 15 à 20 scènes visuelles...")
+        await context.bot.send_message(chat_id=chat_id, text="🔎 Recherche des médias cohérents...")
+        candidate_results = await asyncio.to_thread(_search_candidates, video_plan)
 
-            async def progress_callback(current: int, total: int) -> None:
-                await context.bot.send_message(chat_id=chat_id, text=f"🎨 Génération des visuels {current}/{total}...")
+        await context.bot.send_message(chat_id=chat_id, text="🎞️ Sélection des visuels 1/18...")
+        selected_media = await asyncio.to_thread(select_best_media_for_scenes, video_plan, candidate_results)
+        total = len(selected_media)
+        for checkpoint in [5, 10, 15]:
+            if total >= checkpoint:
+                await context.bot.send_message(chat_id=chat_id, text=f"🎞️ Sélection des visuels {checkpoint}/{total}...")
 
-            scene_images = await generate_scene_images(
-                video_plan,
-                str(settings.IMAGE_DIR),
-                progress_callback=progress_callback,
-            )
+        await context.bot.send_message(chat_id=chat_id, text="⬇️ Téléchargement et préparation des médias...")
+        prepared_media = await asyncio.to_thread(prepare_selected_media, selected_media, job_id)
 
-            await context.bot.send_message(chat_id=chat_id, text="🎙️ Génération de la voix...")
-            audio_path = unique_file_path(settings.AUDIO_DIR, ".mp3")
-            await asyncio.to_thread(generate_voice, video_plan["script"], str(audio_path))
+        await context.bot.send_message(chat_id=chat_id, text="🎙️ Génération de la voix...")
+        audio_path = settings.AUDIO_DIR / f"{job_id}.mp3"
+        await asyncio.to_thread(generate_voice, video_plan["script"], str(audio_path))
 
-            await context.bot.send_message(chat_id=chat_id, text="🎬 Montage de la vidéo 1 min 02 s...")
-            output_path = unique_file_path(settings.VIDEO_DIR, ".mp4")
-            music_path = find_background_music()
-            await asyncio.to_thread(
-                create_tiktok_video,
-                video_plan["title"],
-                video_plan["script"],
-                scene_images,
-                str(audio_path),
-                str(output_path),
-                music_path,
-            )
+        await context.bot.send_message(chat_id=chat_id, text="📝 Préparation des sous-titres...")
 
-            await context.bot.send_message(chat_id=chat_id, text="📤 Envoi de la vidéo...")
-            try:
-                with Path(output_path).open("rb") as video_file:
-                    await context.bot.send_video(
-                        chat_id=chat_id,
-                        video=video_file,
-                        supports_streaming=True,
-                        read_timeout=120,
-                        write_timeout=120,
-                        connect_timeout=60,
-                    )
-            except Exception:
-                logger.exception("Telegram video send failed.")
-                raise
+        await context.bot.send_message(chat_id=chat_id, text="🎬 Montage de la vidéo 1 min 02 s...")
+        output_path = settings.VIDEO_DIR / f"{job_id}.mp4"
+        await asyncio.to_thread(
+            create_tiktok_video,
+            video_plan,
+            prepared_media,
+            str(audio_path),
+            str(output_path),
+            find_background_music(),
+        )
 
-            hashtags = " ".join(video_plan.get("hashtags") or [])
-            await context.bot.send_message(chat_id=chat_id, text=f"{video_plan['title']}\n\n{hashtags}".strip())
-
-    except Exception:
-        logger.exception("Video generation failed for user_id=%s", user_id)
-        try:
-            await context.bot.send_message(
+        await context.bot.send_message(chat_id=chat_id, text="📤 Envoi de la vidéo...")
+        with output_path.open("rb") as video_file:
+            await context.bot.send_video(
                 chat_id=chat_id,
-                text="❌ Une erreur est survenue pendant la génération de la vidéo. Réessaie avec un sujet plus court ou plus simple.",
+                video=video_file,
+                supports_streaming=True,
+                read_timeout=120,
+                write_timeout=120,
+                connect_timeout=60,
             )
-        except Exception:
-            logger.exception("Could not send user-facing error message.")
+
+        hashtags = " ".join(video_plan.get("hashtags") or [])
+        await context.bot.send_message(chat_id=chat_id, text=f"{video_plan['title']}\n\n{hashtags}".strip())
     finally:
-        active_generations.pop(user_id, None)
+        cleanup_job_files([str(job_media_dir), str(audio_path) if audio_path else None, str(output_path) if output_path else None])
+
+
+def _search_candidates(video_plan: dict) -> dict[int, list[dict]]:
+    client = MediaSearchClient()
+    results: dict[int, list[dict]] = {}
+    for scene in video_plan.get("scenes", []):
+        scene_number = int(scene.get("scene_number") or len(results) + 1)
+        results[scene_number] = client.search_scene_candidates(scene)
+    return results
 
 
 def get_application() -> Application:

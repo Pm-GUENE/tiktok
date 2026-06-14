@@ -1,6 +1,6 @@
 # TikTok Video Bot
 
-Bot Telegram en Python qui génère automatiquement une vidéo TikTok verticale à partir d'un simple sujet.
+Bot Telegram qui crée automatiquement une vidéo TikTok verticale à partir d'un sujet.
 
 Exemple :
 
@@ -8,175 +8,137 @@ Exemple :
 Sujet : comment choisir un bon ordinateur portable d’occasion au Sénégal
 ```
 
-Le bot génère :
+Le bot génère un script français adapté au public sénégalais, prépare un plan de 15 à 20 scènes, cherche des photos et vidéos libres via Pexels et Pixabay, génère une voix française, ajoute des sous-titres, monte une vidéo MP4 verticale et l'envoie sur Telegram.
 
-- un script en français adapté à une audience sénégalaise ;
-- un plan vidéo de 15 à 20 scènes, 18 scènes par défaut ;
-- des prompts d'images verticales 9:16 ;
-- des images via Gemini quand l'API image est disponible ;
-- une voix off française avec gTTS ;
-- une vidéo MP4 verticale autour de 1 min 02 s ;
-- des sous-titres lisibles ;
-- un titre au début ;
-- une musique de fond légère si `assets/music/background.mp3` existe ;
-- un message final avec le titre et les hashtags.
+Le bot ne publie pas automatiquement sur TikTok. La publication reste manuelle.
 
-Le bot n'envoie rien automatiquement sur TikTok. L'utilisateur publie la vidéo manuellement.
+## Fonctionnement
 
-## Stack
+Gemini est utilisé uniquement pour :
 
-- Python 3.11+
-- FastAPI
-- python-telegram-bot
-- google-genai
-- gTTS
-- MoviePy
-- FFmpeg
-- Pillow
-- Render Free Web Service
+- écrire le script ;
+- créer le plan narratif ;
+- définir un profil visuel cohérent ;
+- générer les requêtes de recherche média ;
+- proposer le titre et les hashtags.
 
-## Limite Gemini
+Les visuels ne sont pas générés par IA. Ils viennent de médias royalty-free accessibles par API :
 
-Le projet respecte une limite prudente de 5 requêtes Gemini par minute.
+- Pexels ;
+- Pixabay.
 
-Pour éviter les erreurs 429, toutes les requêtes Gemini passent par un limiteur centralisé qui attend environ 13 secondes entre deux appels. La génération du script compte comme une requête. Chaque image compte aussi comme une requête.
+Si aucun média pertinent n'est disponible, le bot réutilise un média cohérent déjà sélectionné ou crée un visuel final de secours avec Pillow.
 
-Une vidéo avec 18 images peut donc prendre plusieurs minutes. Ce délai est normal. Le bot envoie des messages de progression pendant la génération.
+## Variables D'environnement
 
-Si Gemini refuse une image ou renvoie trop d'erreurs, le bot crée une image de secours avec Pillow et continue le montage.
-
-## Créer le bot Telegram
-
-1. Ouvre Telegram.
-2. Cherche `@BotFather`.
-3. Envoie `/newbot`.
-4. Choisis un nom puis un username terminé par `bot`.
-5. Copie le token fourni par BotFather.
-
-Ce token est la variable :
-
-```text
-TELEGRAM_BOT_TOKEN
-```
-
-## Obtenir la clé Gemini
-
-1. Va dans Google AI Studio.
-2. Crée une clé API Gemini.
-3. Copie la clé dans :
-
-```text
-GEMINI_API_KEY
-```
-
-Le projet utilise le SDK officiel `google-genai`.
-
-## Variables d'environnement
-
-Le projet utilise uniquement ces trois variables :
+Le projet utilise uniquement :
 
 ```text
 TELEGRAM_BOT_TOKEN=
 GEMINI_API_KEY=
+PEXELS_API_KEY=
+PIXABAY_API_KEY=
 PUBLIC_URL=
 ```
 
-`PUBLIC_URL` est l'URL publique Render, par exemple :
+`PEXELS_API_KEY` ou `PIXABAY_API_KEY` suffit pour démarrer, mais il est recommandé de configurer les deux.
 
-```text
-https://tiktok-video-bot.onrender.com
-```
+Ne pas utiliser de clé TikTok, ElevenLabs ou OpenAI. Ne pas ajouter de secret webhook.
 
-Le webhook Telegram sera automatiquement configuré au démarrage sur :
+## Créer Les Clés
 
-```text
-https://tiktok-video-bot.onrender.com/webhook
-```
+Telegram :
 
-Il n'y a pas de variable secrète pour le webhook, pas de variable d'environnement applicative supplémentaire, pas de clé ElevenLabs et pas de clé TikTok.
+1. Ouvre Telegram.
+2. Cherche `@BotFather`.
+3. Envoie `/newbot`.
+4. Copie le token dans `TELEGRAM_BOT_TOKEN`.
 
-## Lancer en local
+Gemini :
 
-Installe FFmpeg sur ta machine, puis :
+1. Va sur Google AI Studio.
+2. Crée une clé API.
+3. Mets-la dans `GEMINI_API_KEY`.
+
+Pexels :
+
+1. Crée un compte développeur Pexels.
+2. Copie ta clé API.
+3. Mets-la dans `PEXELS_API_KEY`.
+
+Pixabay :
+
+1. Crée un compte Pixabay.
+2. Récupère ta clé API.
+3. Mets-la dans `PIXABAY_API_KEY`.
+
+## Render
+
+Build Command :
 
 ```bash
-cd tiktok-video-bot
-python -m venv .venv
-.venv\Scripts\activate
 pip install -r requirements.txt
-copy .env.example .env
 ```
 
-Remplis `.env` :
-
-```text
-TELEGRAM_BOT_TOKEN=ton_token_telegram
-GEMINI_API_KEY=ta_cle_gemini
-PUBLIC_URL=https://ton-url-publique
-```
-
-Pour tester un webhook en local, il faut une URL publique, par exemple via un tunnel. Ensuite :
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-Vérifie :
-
-```text
-http://localhost:8000/health
-```
-
-Réponse attendue :
-
-```json
-{
-  "status": "ok",
-  "telegram_bot": "ready"
-}
-```
-
-## Déploiement Render Free
-
-1. Pousse ce projet sur GitHub.
-2. Dans Render, crée un nouveau `Web Service`.
-3. Connecte le dépôt.
-4. Render peut utiliser `render.yaml`.
-5. Configure les variables d'environnement :
-
-```text
-TELEGRAM_BOT_TOKEN
-GEMINI_API_KEY
-PUBLIC_URL
-```
-
-Exemple de `PUBLIC_URL` :
-
-```text
-https://tiktok-video-bot.onrender.com
-```
-
-Render lancera :
+Start Command :
 
 ```bash
 uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
-Le bot utilise un webhook, pas le long polling. C'est adapté à Render.
+Configure les variables dans Render :
+
+```text
+TELEGRAM_BOT_TOKEN
+GEMINI_API_KEY
+PEXELS_API_KEY
+PIXABAY_API_KEY
+PUBLIC_URL
+```
+
+`PUBLIC_URL` doit être l'URL Render sans `/webhook`, par exemple :
+
+```text
+https://ton-service.onrender.com
+```
+
+Au démarrage, le webhook Telegram est automatiquement défini sur :
+
+```text
+https://ton-service.onrender.com/webhook
+```
+
+## Endpoints
+
+Santé :
+
+```text
+GET /health
+```
+
+Réponse :
+
+```json
+{"status":"ok","telegram_bot":"ready"}
+```
+
+Webhook Telegram :
+
+```text
+POST /webhook
+```
 
 ## UptimeRobot
 
-Render Free peut dormir après une période d'inactivité. Pour réduire ce problème, configure UptimeRobot avec une surveillance HTTP sur :
+Pour limiter le sommeil Render Free, configure UptimeRobot sur :
 
 ```text
-https://your-render-app.onrender.com/health
+https://ton-service.onrender.com/health
 ```
-
-Remplace `your-render-app` par le nom réel du service Render.
 
 ## Utilisation
 
-Dans Telegram, envoie :
+Dans Telegram :
 
 ```text
 /start
@@ -188,126 +150,101 @@ Puis :
 Sujet : comment choisir un bon ordinateur portable d’occasion au Sénégal
 ```
 
-Le bot répondra avec des messages comme :
+Le bot envoie des messages de progression :
 
 ```text
 ✅ Sujet reçu. Je prépare la vidéo...
-📝 Génération du script long...
-🎨 Préparation des 15 à 20 scènes visuelles...
-🎨 Génération des visuels 1/18...
+📝 Génération du script et du plan visuel...
+🔎 Recherche des médias cohérents...
+🎞️ Sélection des visuels 1/18...
+⬇️ Téléchargement et préparation des médias...
 🎙️ Génération de la voix...
+📝 Préparation des sous-titres...
 🎬 Montage de la vidéo 1 min 02 s...
 📤 Envoi de la vidéo...
 ```
 
-Ensuite il envoie le MP4, puis le titre et les hashtags.
+## File D'attente
 
-## Ajouter une musique de fond
+Render Free a peu de mémoire et de CPU. Le projet utilise donc :
 
-Place un fichier nommé exactement :
+- une seule file globale ;
+- un seul worker vidéo ;
+- une protection par utilisateur.
+
+Un utilisateur ne peut pas lancer deux vidéos en même temps. Si une autre vidéo est déjà en cours, le sujet est ajouté à la file.
+
+## Musique Et Police
+
+Musique de fond :
 
 ```text
 assets/music/background.mp3
 ```
 
-Le volume est automatiquement réduit autour de 10 % pour garder la voix claire.
-
-## Ajouter une police personnalisée
-
-Place une police nommée exactement :
+Police personnalisée :
 
 ```text
 assets/fonts/font.ttf
 ```
 
-Elle sera utilisée pour les titres, sous-titres et images de secours.
+## Performance
 
-## Protection contre la surcharge
+Pour rester compatible Render Free, la vidéo est rendue en 720x1280, format vertical 9:16. C'est plus léger que le 1080x1920 et évite plus facilement les erreurs mémoire 512 MB.
 
-Le projet contient une protection simple en mémoire :
+La durée finale suit la durée réelle de la voix gTTS. La cible reste environ 1 min 02 s.
 
-- un même utilisateur ne peut pas lancer deux générations en même temps ;
-- une seule génération lourde tourne à la fois ;
-- les requêtes Gemini ne sont pas parallélisées ;
-- les images sont générées une par une.
+## Problèmes Fréquents
 
-Ne spamme pas plusieurs demandes de vidéo. Sur Render Free, cela peut ralentir ou faire échouer le service.
+`/health` retourne Not Found :
 
-## Problèmes fréquents
+- vérifie que le repo est à la racine ;
+- vérifie le Start Command ;
+- ne mets pas de Root Directory si les fichiers sont à la racine.
 
-### Le webhook ne se configure pas
+Webhook non configuré :
 
-Vérifie que `PUBLIC_URL` est bien l'URL publique Render sans `/webhook` à la fin. Le projet ajoute `/webhook` automatiquement.
+- vérifie `TELEGRAM_BOT_TOKEN` ;
+- vérifie `PUBLIC_URL` sans `/webhook` ;
+- redéploie Render.
 
-### `TELEGRAM_BOT_TOKEN` manquant
+Clé Pexels ou Pixabay absente :
 
-Ajoute la variable dans Render ou dans `.env` en local. Le token vient de BotFather.
+- configure au moins une clé média ;
+- deux clés donnent de meilleurs résultats.
 
-### `GEMINI_API_KEY` manquant
+Aucun média trouvé :
 
-Ajoute ta clé Gemini dans Render ou dans `.env`.
+- le bot utilise un média précédent ou un visuel Pillow ;
+- essaie un sujet plus concret.
 
-### `PUBLIC_URL` manquant
+Quota fournisseur atteint :
 
-Ajoute l'URL publique Render, par exemple :
+- le bot continue avec l'autre fournisseur si disponible.
 
-```text
-https://tiktok-video-bot.onrender.com
-```
+Render dort :
 
-### Render dort
+- utilise UptimeRobot sur `/health`.
 
-Render Free peut mettre le service en veille. Utilise UptimeRobot sur `/health`.
+Vidéo trop lente :
 
-### La génération est trop lente
+- la recherche média, le téléchargement, gTTS et MoviePy peuvent prendre plusieurs minutes sur Render Free.
 
-C'est normal si 15 à 20 images sont générées. Le projet attend environ 13 secondes entre les appels Gemini pour respecter la limite de 5 requêtes par minute.
+Erreur FFmpeg ou MoviePy :
 
-### Erreur Gemini 429
+- vérifie les logs Render ;
+- relance un déploiement propre ;
+- évite de lancer plusieurs générations.
 
-Le bot attend 60 secondes et réessaie jusqu'à 3 fois. Si l'image échoue encore, il crée une image de secours avec Pillow.
+Fichier Telegram trop grand :
 
-### Erreur gTTS
+- le projet compresse en H.264 avec un bitrate modéré ;
+- la résolution 720x1280 aide à rester sous la limite.
 
-gTTS dépend d'une connexion externe. Réessaie plus tard si la génération de voix échoue.
+## Sécurité
 
-### Erreur MoviePy ou FFmpeg
-
-Vérifie que FFmpeg est disponible. Render installe généralement FFmpeg dans l'environnement Python de MoviePy, mais selon l'image système il peut être nécessaire d'ajuster le service ou d'ajouter un build pack.
-
-### Vidéo trop lourde pour Telegram
-
-Le projet compresse en H.264 avec un bitrate raisonnable. Si une vidéo dépasse encore la limite, réduis le nombre de scènes ou baisse le bitrate dans `services/video_service.py`.
-
-## Structure
-
-```text
-tiktok-video-bot/
-├── main.py
-├── requirements.txt
-├── render.yaml
-├── README.md
-├── .env.example
-├── .gitignore
-├── app/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── bot.py
-│   ├── routes.py
-│   └── utils.py
-├── services/
-│   ├── __init__.py
-│   ├── gemini_service.py
-│   ├── voice_service.py
-│   ├── video_service.py
-│   ├── subtitle_service.py
-│   └── rate_limiter.py
-├── assets/
-│   ├── music/
-│   ├── fonts/
-│   └── backgrounds/
-└── output/
-    ├── images/
-    ├── audio/
-    └── videos/
-```
+- Ne commit jamais `.env`.
+- Ne colle pas tes clés API dans le code.
+- Les erreurs internes ne sont pas envoyées aux utilisateurs Telegram.
+- Les téléchargements sont limités en taille.
+- Seuls des formats image/vidéo connus sont traités.

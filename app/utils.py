@@ -12,11 +12,14 @@ logger = logging.getLogger(__name__)
 def ensure_directories() -> None:
     for directory in [
         settings.IMAGE_DIR,
+        settings.MEDIA_DIR,
         settings.AUDIO_DIR,
+        settings.OVERLAY_OUTPUT_DIR,
         settings.VIDEO_DIR,
         settings.MUSIC_DIR,
         settings.FONTS_DIR,
         settings.BACKGROUNDS_DIR,
+        settings.OVERLAYS_DIR,
     ]:
         directory.mkdir(parents=True, exist_ok=True)
 
@@ -44,7 +47,7 @@ def find_background_music() -> str | None:
 
 
 def cleanup_old_outputs(max_files_per_dir: int = 80) -> None:
-    for directory in [settings.IMAGE_DIR, settings.AUDIO_DIR, settings.VIDEO_DIR]:
+    for directory in [settings.IMAGE_DIR, settings.MEDIA_DIR, settings.AUDIO_DIR, settings.OVERLAY_OUTPUT_DIR, settings.VIDEO_DIR]:
         if not directory.exists():
             continue
         files = sorted(

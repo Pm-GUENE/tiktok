@@ -6,9 +6,13 @@ __pycache__/
 venv/
 env/
 output/images/*
+output/media/*
 output/audio/*
+output/overlays/*
 output/videos/*
 !output/images/.gitkeep
+!output/media/.gitkeep
 !output/audio/.gitkeep
+!output/overlays/.gitkeep
 !output/videos/.gitkeep
 *.temp-audio.m4a
