@@ -5,6 +5,7 @@ google-genai
 python-dotenv
 gTTS
 moviepy
+imageio-ffmpeg
 pillow
 aiofiles
 requests

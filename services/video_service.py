@@ -1,5 +1,8 @@
 import logging
 import math
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -9,7 +12,6 @@ from app.utils import unique_file_path
 from services.subtitle_service import split_script_into_subtitles
 
 logger = logging.getLogger(__name__)
-_MP = None
 
 
 def create_tiktok_video(
@@ -22,194 +24,320 @@ def create_tiktok_video(
     if not prepared_media:
         raise RuntimeError("Aucun média disponible pour créer la vidéo.")
 
-    mp = _load_moviepy()
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    voice = mp.AudioFileClip(audio_path)
-    duration = float(voice.duration or settings.TARGET_DURATION_SECONDS)
-    width, height = settings.VIDEO_WIDTH, settings.VIDEO_HEIGHT
-    script = video_plan.get("script", "")
-    title = video_plan.get("title", "Vidéo TikTok")
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    work_dir = settings.VIDEO_DIR / f"render_{output.stem}"
+    work_dir.mkdir(parents=True, exist_ok=True)
 
-    clips = []
+    ffmpeg = _ffmpeg_exe()
+    duration = _probe_duration(audio_path) or settings.TARGET_DURATION_SECONDS
     scene_duration = duration / len(prepared_media)
-    for index, media in enumerate(prepared_media):
-        clip = _make_media_clip(mp, media, scene_duration, width, height, index)
-        clips.append(clip)
+    width, height = settings.VIDEO_WIDTH, settings.VIDEO_HEIGHT
 
-    video = _with_duration(mp.concatenate_videoclips(clips, method="compose"), duration)
-
-    overlays = []
-    title_overlay = create_text_overlay(title, width=width, height=height, position="title")
-    title_clip = mp.ImageClip(title_overlay)
-    title_clip = _with_position(title_clip, ("center", 180))
-    title_clip = _with_start(_with_duration(title_clip, min(2.6, duration)), 0)
-    overlays.append(title_clip)
-
-    for subtitle in split_script_into_subtitles(script, duration, max_words=7):
-        overlay_path = create_text_overlay(subtitle["text"], width=width, height=height, position="bottom")
-        overlay = mp.ImageClip(overlay_path)
-        overlay = _with_position(overlay, ("center", int(height * 0.68)))
-        overlay = _with_start(overlay, subtitle["start"])
-        overlay = _with_duration(overlay, max(0.5, subtitle["end"] - subtitle["start"]))
-        overlays.append(overlay)
-
-    final = _with_duration(mp.CompositeVideoClip([video, *overlays], size=(width, height)), duration)
-
-    audio_tracks = [_with_volume(voice, 1.0)]
-    audio_clips_to_close = []
-    if music_path and Path(music_path).exists():
-        try:
-            music = _with_volume(mp.AudioFileClip(music_path), 0.1)
-            if music.duration < duration:
-                music = _loop_audio(music, duration, mp)
-            else:
-                music = _subclip(music, 0, duration)
-            music = _audio_fadeout(music, 1.0)
-            audio_tracks.append(music)
-            audio_clips_to_close.append(music)
-        except Exception:
-            logger.exception("Background music could not be loaded. Continuing without music.")
-
-    mixed_audio = _with_duration(mp.CompositeAudioClip(audio_tracks), duration)
-    final = _with_audio(final, mixed_audio)
+    segment_paths: list[Path] = []
+    concat_path = work_dir / "concat.txt"
+    video_only_path = work_dir / "video_only.mp4"
+    subtitle_path = work_dir / "subtitles.ass"
 
     try:
-        final.write_videofile(
-            output_path,
-            fps=settings.VIDEO_FPS,
-            codec="libx264",
-            audio_codec="aac",
-            preset="veryfast",
-            bitrate="1200k",
-            audio_bitrate="128k",
-            threads=1,
-            logger=None,
-            temp_audiofile=str(Path(output_path).with_suffix(".temp-audio.m4a")),
-            remove_temp=True,
+        for index, media in enumerate(prepared_media, start=1):
+            segment_path = work_dir / f"segment_{index:02d}.mp4"
+            _render_segment(ffmpeg, media, segment_path, scene_duration, width, height)
+            segment_paths.append(segment_path)
+
+        _write_concat_file(concat_path, segment_paths)
+        _run(
+            [
+                ffmpeg,
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat_path),
+                "-c",
+                "copy",
+                str(video_only_path),
+            ]
         )
+
+        _write_ass_subtitles(
+            subtitle_path,
+            title=video_plan.get("title", "Vidéo TikTok"),
+            script=video_plan.get("script", ""),
+            audio_duration=duration,
+            width=width,
+            height=height,
+        )
+        _mux_audio_and_subtitles(ffmpeg, video_only_path, subtitle_path, audio_path, output, duration, music_path)
     except Exception as exc:
-        logger.exception("MoviePy video export failed.")
+        logger.exception("FFmpeg video export failed.")
         raise RuntimeError("Le montage vidéo a échoué.") from exc
     finally:
-        _close_clips([final, mixed_audio, *audio_clips_to_close, video, *overlays, *clips, voice])
+        shutil.rmtree(work_dir, ignore_errors=True)
 
-    return output_path
-
-
-def _load_moviepy():
-    global _MP
-    if _MP is not None:
-        return _MP
-    try:
-        import moviepy.editor as moviepy_module
-    except ModuleNotFoundError:
-        import moviepy as moviepy_module
-    _MP = moviepy_module
-    return _MP
+    return str(output)
 
 
-def _make_media_clip(mp, media: dict, scene_duration: float, width: int, height: int, index: int):
-    path = media.get("prepared_path")
-    if not path:
+def _render_segment(ffmpeg: str, media: dict, output_path: Path, duration: float, width: int, height: int) -> None:
+    source = media.get("prepared_path")
+    if not source or not Path(source).exists():
         raise RuntimeError("Prepared media path is missing.")
 
+    vf = (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},setsar=1,fps={settings.VIDEO_FPS},format=yuv420p"
+    )
+
     if media.get("prepared_type") == "video":
-        clip = mp.VideoFileClip(path)
-        clip = _without_audio(clip)
-        if float(clip.duration or 0) > scene_duration:
-            start = 0
-            if clip.duration and clip.duration > scene_duration + 1:
-                start = min((index % 3) * 0.7, max(0, clip.duration - scene_duration))
-            clip = _subclip(clip, start, start + scene_duration)
-        else:
-            clip = _with_duration(clip, scene_duration)
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-stream_loop",
+            "-1",
+            "-i",
+            source,
+            "-t",
+            f"{duration:.3f}",
+            "-an",
+            "-vf",
+            vf,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "30",
+            "-threads",
+            "1",
+            str(output_path),
+        ]
     else:
-        clip = mp.ImageClip(path)
-        clip = _with_duration(clip, scene_duration)
-        clip = _resized(clip, lambda t: 1.0 + 0.03 * (t / max(scene_duration, 0.1)))
-
-    clip = _cover_resize_crop(clip, width, height)
-    return _with_duration(clip, scene_duration)
-
-
-def _with_duration(clip, duration: float):
-    if hasattr(clip, "with_duration"):
-        return clip.with_duration(duration)
-    return clip.set_duration(duration)
-
-
-def _with_start(clip, start: float):
-    if hasattr(clip, "with_start"):
-        return clip.with_start(start)
-    return clip.set_start(start)
-
-
-def _with_audio(clip, audio):
-    if hasattr(clip, "with_audio"):
-        return clip.with_audio(audio)
-    return clip.set_audio(audio)
-
-
-def _without_audio(clip):
-    if hasattr(clip, "without_audio"):
-        return clip.without_audio()
-    return clip.set_audio(None)
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-loop",
+            "1",
+            "-t",
+            f"{duration:.3f}",
+            "-i",
+            source,
+            "-an",
+            "-vf",
+            vf,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "30",
+            "-threads",
+            "1",
+            str(output_path),
+        ]
+    _run(cmd)
 
 
-def _with_position(clip, position):
-    if hasattr(clip, "with_position"):
-        return clip.with_position(position)
-    return clip.set_position(position)
-
-
-def _resized(clip, *args, **kwargs):
-    if hasattr(clip, "resized"):
-        return clip.resized(*args, **kwargs)
-    return clip.resize(*args, **kwargs)
-
-
-def _cropped(clip, *args, **kwargs):
-    if hasattr(clip, "cropped"):
-        return clip.cropped(*args, **kwargs)
-    return clip.crop(*args, **kwargs)
-
-
-def _cover_resize_crop(clip, width: int, height: int):
-    source_w = getattr(clip, "w", None) or getattr(clip, "size", [width, height])[0]
-    source_h = getattr(clip, "h", None) or getattr(clip, "size", [width, height])[1]
-    source_ratio = source_w / source_h
-    target_ratio = width / height
-    if source_ratio > target_ratio:
-        clip = _resized(clip, height=height)
+def _mux_audio_and_subtitles(
+    ffmpeg: str,
+    video_path: Path,
+    subtitle_path: Path,
+    audio_path: str,
+    output_path: Path,
+    duration: float,
+    music_path: str | None,
+) -> None:
+    subtitle_filter = f"ass={_ffmpeg_filter_path(subtitle_path)}"
+    if music_path and Path(music_path).exists():
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(video_path),
+            "-i",
+            audio_path,
+            "-stream_loop",
+            "-1",
+            "-i",
+            music_path,
+            "-t",
+            f"{duration:.3f}",
+            "-filter_complex",
+            f"[0:v]{subtitle_filter}[v];[2:a]volume=0.09[m];[1:a][m]amix=inputs=2:duration=first:dropout_transition=0[a]",
+            "-map",
+            "[v]",
+            "-map",
+            "[a]",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "28",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-threads",
+            "1",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
     else:
-        clip = _resized(clip, width=width)
-    return _cropped(clip, x_center=clip.w / 2, y_center=clip.h / 2, width=width, height=height)
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(video_path),
+            "-i",
+            audio_path,
+            "-t",
+            f"{duration:.3f}",
+            "-vf",
+            subtitle_filter,
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "28",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-threads",
+            "1",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+    _run(cmd)
 
 
-def _subclip(clip, start: float, end: float):
-    if hasattr(clip, "subclipped"):
-        return clip.subclipped(start, end)
-    return clip.subclip(start, end)
+def _write_concat_file(path: Path, segment_paths: list[Path]) -> None:
+    lines = []
+    for segment in segment_paths:
+        safe = str(segment.resolve()).replace("\\", "/").replace("'", "'\\''")
+        lines.append(f"file '{safe}'")
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _with_volume(clip, factor: float):
-    if hasattr(clip, "with_volume_scaled"):
-        return clip.with_volume_scaled(factor)
-    return clip.volumex(factor)
+def _write_ass_subtitles(path: Path, title: str, script: str, audio_duration: float, width: int, height: int) -> None:
+    subtitles = split_script_into_subtitles(script, audio_duration, max_words=7)
+    title_font = max(34, int(width * 0.062))
+    subtitle_font = max(30, int(width * 0.052))
+    subtitle_margin_v = int(height * 0.22)
+
+    header = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {width}
+PlayResY: {height}
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Title,DejaVu Sans,{title_font},&H00FFFFFF,&H000000FF,&H90000000,&H90000000,1,0,0,0,100,100,0,0,3,1,0,8,60,60,110,1
+Style: Subtitle,DejaVu Sans,{subtitle_font},&H00FFFFFF,&H000000FF,&H90000000,&H90000000,1,0,0,0,100,100,0,0,3,1,0,2,56,56,{subtitle_margin_v},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    events = [f"Dialogue: 0,0:00:00.00,{_ass_time(min(2.8, audio_duration))},Title,,0,0,0,,{_ass_escape(title)}"]
+    for subtitle in subtitles:
+        events.append(
+            "Dialogue: 0,"
+            f"{_ass_time(subtitle['start'])},{_ass_time(subtitle['end'])},"
+            f"Subtitle,,0,0,0,,{_ass_escape(subtitle['text'])}"
+        )
+    path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
 
 
-def _loop_audio(audio, duration: float, mp):
-    if not audio.duration or audio.duration <= 0:
-        return _with_duration(audio, duration)
-    loop_count = max(1, math.ceil(duration / audio.duration))
-    looped = mp.concatenate_audioclips([audio] * loop_count)
-    return _subclip(looped, 0, duration)
+def _probe_duration(path: str) -> float | None:
+    ffprobe = _ffprobe_exe()
+    if ffprobe:
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    path,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return float(result.stdout.strip())
+        except Exception:
+            logger.debug("ffprobe duration failed for %s", path, exc_info=True)
+    try:
+        result = subprocess.run([_ffmpeg_exe(), "-i", path], capture_output=True, text=True, timeout=30)
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", result.stderr or "")
+        if match:
+            hours, minutes, seconds = match.groups()
+            return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    except Exception:
+        logger.debug("ffmpeg duration parse failed for %s", path, exc_info=True)
+    return None
 
 
-def _audio_fadeout(audio, seconds: float):
-    if hasattr(audio, "audio_fadeout"):
-        return audio.audio_fadeout(seconds)
-    return audio
+def _ffmpeg_exe() -> str:
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
+
+def _ffprobe_exe() -> str | None:
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        return ffprobe
+    ffmpeg = _ffmpeg_exe()
+    candidate = str(Path(ffmpeg).with_name("ffprobe.exe" if ffmpeg.endswith(".exe") else "ffprobe"))
+    return candidate if Path(candidate).exists() else None
+
+
+def _run(cmd: list[str]) -> None:
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    if result.returncode != 0:
+        logger.error("FFmpeg command failed: %s", _redact_cmd(cmd))
+        logger.error("FFmpeg stderr: %s", (result.stderr or "")[-1200:])
+        raise RuntimeError("FFmpeg command failed.")
+
+
+def _redact_cmd(cmd: list[str]) -> str:
+    return " ".join(str(part) for part in cmd if "api" not in str(part).lower())
+
+
+def _ffmpeg_filter_path(path: Path) -> str:
+    escaped = str(path.resolve()).replace("\\", "/").replace(":", "\\:")
+    return escaped.replace("'", "\\'")
+
+
+def _ass_time(seconds: float) -> str:
+    seconds = max(0, float(seconds))
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    return f"{hours}:{minutes:02d}:{secs:05.2f}"
+
+
+def _ass_escape(text: str) -> str:
+    return str(text).replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
 
 
 def create_text_overlay(
@@ -219,7 +347,6 @@ def create_text_overlay(
     position: str = "bottom",
 ) -> str:
     width = width or settings.VIDEO_WIDTH
-    height = height or settings.VIDEO_HEIGHT
     output_path = unique_file_path(settings.OVERLAY_OUTPUT_DIR, ".png")
     is_title = position == "title"
     font_size = max(38, min(64, int(width * (0.084 if is_title else 0.068))))
@@ -233,13 +360,7 @@ def create_text_overlay(
     block_height = line_height * len(lines) + 50
     image = Image.new("RGBA", (block_width, block_height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-
-    draw.rounded_rectangle(
-        [0, 0, block_width, block_height],
-        radius=34,
-        fill=(0, 0, 0, 150),
-    )
-
+    draw.rounded_rectangle([0, 0, block_width, block_height], radius=34, fill=(0, 0, 0, 150))
     text_y = 24
     for line in lines:
         line = _fit_line(line, font, block_width - 80)
@@ -249,7 +370,6 @@ def create_text_overlay(
         draw.text((text_x + 3, text_y + 3), line, font=font, fill=(0, 0, 0, 190))
         draw.text((text_x, text_y), line, font=font, fill=(255, 255, 255, 255))
         text_y += line_height
-
     image.save(output_path, "PNG")
     return str(output_path)
 
@@ -278,7 +398,6 @@ def _wrap_lines(text: str, font: ImageFont.ImageFont, max_width: int, max_lines:
     draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
     lines: list[str] = []
     current = ""
-
     for word in words:
         candidate = f"{current} {word}".strip()
         if draw.textbbox((0, 0), candidate, font=font)[2] <= max_width or not current:
@@ -288,14 +407,12 @@ def _wrap_lines(text: str, font: ImageFont.ImageFont, max_width: int, max_lines:
             current = word
             if len(lines) == max_lines - 1:
                 break
-
     if current and len(lines) < max_lines:
         remaining = words[len(" ".join(lines).split()) :]
         final_line = " ".join(remaining) if remaining else current
         while draw.textbbox((0, 0), final_line, font=font)[2] > max_width and len(final_line) > 8:
             final_line = final_line[:-4].rstrip() + "..."
         lines.append(final_line)
-
     return lines[:max_lines]
 
 
@@ -303,16 +420,7 @@ def _fit_line(line: str, font: ImageFont.ImageFont, max_width: int) -> str:
     draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
     if draw.textbbox((0, 0), line, font=font)[2] <= max_width:
         return line
-
     fitted = line
     while len(fitted) > 4 and draw.textbbox((0, 0), fitted + "...", font=font)[2] > max_width:
         fitted = fitted[:-1]
     return fitted.rstrip() + "..."
-
-
-def _close_clips(clips: list) -> None:
-    for clip in clips:
-        try:
-            clip.close()
-        except Exception:
-            pass
