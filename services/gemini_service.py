@@ -72,7 +72,7 @@ Schéma strict:
     "lighting": "string",
     "mood": "string",
     "dominant_topic": "string",
-    "preferred_media_type": "video"
+  "preferred_media_type": "photo"
   }},
   "scenes": [
     {{
@@ -80,7 +80,7 @@ Schéma strict:
       "voice_segment": "string",
       "subtitle": "string",
       "duration_seconds": 3.4,
-      "preferred_media_type": "video",
+      "preferred_media_type": "photo",
       "subject": "string",
       "shot_type": "string",
       "action": "string",
@@ -99,7 +99,7 @@ Contraintes:
 - Une direction visuelle stable pour toute la vidéo.
 - Chaque scène décrit un moment visuel clair.
 - Chaque scène a 3 requêtes de recherche en anglais: précise, africaine plus large, générique pertinente.
-- Préfère des médias réalistes, documentaires, verticaux si possible.
+- Préfère des photos réalistes, documentaires, verticales si possible.
 - Recherche d'abord contexte sénégalais, puis africain, puis générique.
 - Évite marques, logos, célébrités, personnages protégés, politique, texte visible.
 - Pas de fausses statistiques, pas de conseils médicaux/légaux/financiers risqués.
@@ -230,7 +230,7 @@ def _safe_duration(value: Any) -> float:
 
 
 def _media_type(value: Any) -> str:
-    return "photo" if str(value).lower() in {"photo", "image"} else "video"
+    return "photo"
 
 
 def _negative_keywords(value: Any) -> list[str]:
@@ -259,7 +259,7 @@ def fallback_video_plan(topic: str) -> dict:
         "lighting": "warm natural light",
         "mood": "useful, trustworthy and practical",
         "dominant_topic": topic,
-        "preferred_media_type": "video",
+        "preferred_media_type": "photo",
     }
     script = (
         f"Avant de te lancer sur {topic}, prends une minute pour éviter les erreurs. "
@@ -299,7 +299,7 @@ def fallback_video_plan(topic: str) -> dict:
                 "voice_segment": subtitle,
                 "subtitle": subtitle,
                 "duration_seconds": 3.4,
-                "preferred_media_type": "video" if index % 3 != 0 else "photo",
+                "preferred_media_type": "photo",
                 "subject": "young African adult making a practical decision",
                 "shot_type": "medium shot" if index % 2 else "close up",
                 "action": "checking details and comparing options",

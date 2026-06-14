@@ -10,7 +10,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-MAX_DOWNLOAD_BYTES = 45 * 1024 * 1024
+MAX_PHOTO_DOWNLOAD_BYTES = 6 * 1024 * 1024
 REQUEST_TIMEOUT = (5, 45)
 
 
@@ -24,24 +24,19 @@ def prepare_selected_media(selected_media: list[dict], job_id: str) -> list[dict
         scene = item.get("scene") or {}
         try:
             if item.get("media_type") == "photo" and item.get("download_url"):
-                path = _download_file(item["download_url"], job_dir, ".jpg")
+                path = _download_file(item["download_url"], job_dir, ".jpg", MAX_PHOTO_DOWNLOAD_BYTES)
                 prepared_path = _prepare_photo(path, job_dir / f"scene_{index:02d}.jpg")
                 _safe_unlink(path)
                 previous_path = str(prepared_path)
                 prepared.append({**item, "prepared_path": str(prepared_path), "prepared_type": "photo"})
-            elif item.get("media_type") == "video" and item.get("download_url"):
-                suffix = ".mp4"
-                path = _download_file(item["download_url"], job_dir, suffix)
-                previous_path = str(path)
-                prepared.append({**item, "prepared_path": str(path), "prepared_type": "video"})
             elif previous_path:
                 prepared.append({**item, "prepared_path": previous_path, "prepared_type": _type_from_path(previous_path), "reuse": True})
             else:
                 prepared_path = create_fallback_visual(scene.get("subtitle") or f"Scène {index}", job_dir / f"scene_{index:02d}_fallback.jpg", index)
                 previous_path = str(prepared_path)
                 prepared.append({**item, "prepared_path": str(prepared_path), "prepared_type": "photo"})
-        except Exception:
-            logger.exception("Media preparation failed for scene %s. Using fallback.", index)
+        except Exception as exc:
+            logger.warning("Media preparation failed for scene %s. Using fallback: %s", index, _short_error(exc))
             prepared_path = create_fallback_visual(scene.get("subtitle") or f"Scène {index}", job_dir / f"scene_{index:02d}_fallback.jpg", index)
             previous_path = str(prepared_path)
             prepared.append({**item, "prepared_path": str(prepared_path), "prepared_type": "photo"})
@@ -95,10 +90,13 @@ def create_fallback_visual(text: str, output_path: Path, scene_number: int) -> P
     return output_path
 
 
-def _download_file(url: str, directory: Path, suffix: str) -> Path:
+def _download_file(url: str, directory: Path, suffix: str, max_bytes: int) -> Path:
     path = directory / f"{uuid.uuid4().hex}{suffix}"
     with requests.get(url, stream=True, timeout=REQUEST_TIMEOUT) as response:
         response.raise_for_status()
+        content_length = int(response.headers.get("content-length") or 0)
+        if content_length and content_length > max_bytes:
+            raise RuntimeError(f"media too large ({content_length // 1024 // 1024}MB)")
         content_type = response.headers.get("content-type", "").lower()
         if suffix == ".mp4" and "video" not in content_type and "octet-stream" not in content_type:
             raise RuntimeError(f"Unexpected video content type: {content_type}")
@@ -110,8 +108,9 @@ def _download_file(url: str, directory: Path, suffix: str) -> Path:
                 if not chunk:
                     continue
                 total += len(chunk)
-                if total > MAX_DOWNLOAD_BYTES:
-                    raise RuntimeError("Downloaded media is too large.")
+                if total > max_bytes:
+                    _safe_unlink(path)
+                    raise RuntimeError(f"media too large during download ({total // 1024 // 1024}MB)")
                 handle.write(chunk)
     return path
 
@@ -177,3 +176,7 @@ def _safe_unlink(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _short_error(exc: Exception) -> str:
+    return " ".join(str(exc).split())[:180]

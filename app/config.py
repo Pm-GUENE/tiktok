@@ -27,10 +27,10 @@ class Settings:
     BACKGROUNDS_DIR = ASSETS_DIR / "backgrounds"
     OVERLAYS_DIR = ASSETS_DIR / "overlays"
 
-    # Render Free has a 512 MB RAM limit. 720p keeps TikTok's 9:16 format
-    # while avoiding the memory spikes caused by 18 full-HD MoviePy clips.
-    VIDEO_WIDTH = 720
-    VIDEO_HEIGHT = 1280
+    # Render Free has a 512 MB RAM limit. 540x960 keeps TikTok's 9:16
+    # format while reducing FFmpeg memory and temporary file pressure.
+    VIDEO_WIDTH = 540
+    VIDEO_HEIGHT = 960
     VIDEO_FPS = 24
     TARGET_DURATION_SECONDS = 62
     MAX_TOPIC_LENGTH = 250

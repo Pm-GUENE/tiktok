@@ -44,11 +44,12 @@ def _score_candidate(candidate: dict, scene: dict, visual_profile: dict, used_id
 
     score += 30 if any(word in query for word in _keywords(subject)) else 10
     score += 20 if _is_portrait(candidate) else -15
-    score += 12 if candidate.get("media_type") == scene.get("preferred_media_type") else 3
+    score += 12 if candidate.get("media_type") == "photo" else -80
     score += min((int(candidate.get("width") or 0) * int(candidate.get("height") or 0)) // 120_000, 10)
     score += _profile_score(visual_text, visual_profile, environment)
     score += _duration_score(candidate)
     score += 5 if candidate.get("provider") == "pexels" else 3
+    score += _file_size_score(candidate)
 
     media_id = (candidate.get("provider", ""), candidate.get("id", ""))
     if media_id in used_ids:
@@ -77,16 +78,22 @@ def _profile_score(text: str, profile: dict, environment: str) -> int:
 
 
 def _duration_score(candidate: dict) -> int:
-    if candidate.get("media_type") != "video":
-        return 4
-    duration = float(candidate.get("duration") or 0)
-    return 8 if 4 <= duration <= 20 else 2
+    return 4
+
+
+def _file_size_score(candidate: dict) -> int:
+    size = int(candidate.get("file_size") or 0)
+    if not size:
+        return 0
+    if candidate.get("media_type") == "photo" and size > 6 * 1024 * 1024:
+        return -30
+    return 4
 
 
 def _reuse_previous(selected: list[dict], scene: dict) -> dict | None:
     if len(selected) < 4:
         return None
     for previous in reversed(selected[:-3]):
-        if previous.get("media_type") in {"video", "photo"}:
+        if previous.get("media_type") == "photo":
             return {**previous, "reuse": True, "scene": scene}
     return None

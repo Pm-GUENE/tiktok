@@ -8,7 +8,7 @@ Exemple :
 Sujet : comment choisir un bon ordinateur portable d’occasion au Sénégal
 ```
 
-Le bot génère un script français adapté au public sénégalais, prépare un plan de 15 à 20 scènes, cherche des photos et vidéos libres via Pexels et Pixabay, génère une voix française, ajoute des sous-titres, monte une vidéo MP4 verticale et l'envoie sur Telegram.
+Le bot génère un script français adapté au public sénégalais, prépare un plan de 15 à 20 scènes, cherche des photos libres via Pexels et Pixabay, génère une voix française, ajoute des sous-titres, monte une vidéo MP4 verticale et l'envoie sur Telegram.
 
 Le bot ne publie pas automatiquement sur TikTok. La publication reste manuelle.
 
@@ -22,7 +22,7 @@ Gemini est utilisé uniquement pour :
 - générer les requêtes de recherche média ;
 - proposer le titre et les hashtags.
 
-Les visuels ne sont pas générés par IA. Ils viennent de médias royalty-free accessibles par API :
+Les visuels ne sont pas générés par IA. Ils viennent de photos royalty-free accessibles par API :
 
 - Pexels ;
 - Pixabay.
@@ -155,7 +155,7 @@ Le bot envoie des messages de progression :
 ```text
 ✅ Sujet reçu. Je prépare la vidéo...
 📝 Génération du script et du plan visuel...
-🔎 Recherche des médias cohérents...
+🔎 Recherche des photos cohérentes...
 🎞️ Sélection des visuels 1/18...
 ⬇️ Téléchargement et préparation des médias...
 🎙️ Génération de la voix...
@@ -190,7 +190,7 @@ assets/fonts/font.ttf
 
 ## Performance
 
-Pour rester compatible Render Free, la vidéo est rendue en 720x1280, format vertical 9:16. C'est plus léger que le 1080x1920 et évite plus facilement les erreurs mémoire 512 MB.
+Pour rester compatible Render Free, le bot télécharge uniquement des photos, pas de vidéos stock. La vidéo finale est rendue en 540x960, format vertical 9:16. C'est beaucoup plus léger et réduit les erreurs mémoire 512 MB.
 
 La durée finale suit la durée réelle de la voix gTTS. La cible reste environ 1 min 02 s.
 
@@ -239,7 +239,7 @@ Erreur FFmpeg ou MoviePy :
 Fichier Telegram trop grand :
 
 - le projet compresse en H.264 avec un bitrate modéré ;
-- la résolution 720x1280 aide à rester sous la limite.
+- la résolution 540x960 aide à rester sous la limite.
 
 ## Sécurité
 

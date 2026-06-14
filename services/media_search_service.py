@@ -19,12 +19,9 @@ class MediaSearchClient:
 
     def search_scene_candidates(self, scene: dict) -> list[dict]:
         candidates: list[dict] = []
-        preferred = scene.get("preferred_media_type", "video")
-        media_order = ["video", "photo"] if preferred == "video" else ["photo", "video"]
         for query in scene.get("search_queries", [])[:3]:
-            for media_type in media_order:
-                candidates.extend(self.search_provider("pexels", media_type, query))
-                candidates.extend(self.search_provider("pixabay", media_type, query))
+            candidates.extend(self.search_provider("pexels", "photo", query))
+            candidates.extend(self.search_provider("pixabay", "photo", query))
             if len(candidates) >= 8:
                 break
         return candidates
@@ -33,45 +30,14 @@ class MediaSearchClient:
         key = (provider, media_type, query.lower().strip(), per_page)
         if key in self.cache:
             return self.cache[key]
-        if provider == "pexels" and media_type == "video":
-            results = search_pexels_videos(query, per_page)
+        if media_type != "photo":
+            results = []
         elif provider == "pexels":
             results = search_pexels_photos(query, per_page)
-        elif provider == "pixabay" and media_type == "video":
-            results = search_pixabay_videos(query, per_page)
         else:
             results = search_pixabay_images(query, per_page)
         self.cache[key] = results
         return results
-
-
-def search_pexels_videos(query: str, per_page: int = 8) -> list[dict]:
-    if not settings.PEXELS_API_KEY:
-        return []
-    url = f"{PEXELS_API_URL}/videos/search"
-    data = _request_json(url, headers={"Authorization": settings.PEXELS_API_KEY}, params={"query": query, "per_page": per_page})
-    results = []
-    for item in data.get("videos", []) if isinstance(data, dict) else []:
-        files = item.get("video_files") or []
-        best = _best_pexels_video_file(files)
-        if not best:
-            continue
-        results.append(
-            {
-                "provider": "pexels",
-                "media_type": "video",
-                "id": str(item.get("id")),
-                "download_url": best.get("link"),
-                "preview_url": item.get("image"),
-                "width": int(best.get("width") or item.get("width") or 0),
-                "height": int(best.get("height") or item.get("height") or 0),
-                "duration": float(item.get("duration") or 0),
-                "photographer": item.get("user", {}).get("name", ""),
-                "source_url": item.get("url", ""),
-                "query_used": query,
-            }
-        )
-    return results
 
 
 def search_pexels_photos(query: str, per_page: int = 8) -> list[dict]:
@@ -92,41 +58,13 @@ def search_pexels_photos(query: str, per_page: int = 8) -> list[dict]:
                 "width": int(item.get("width") or 0),
                 "height": int(item.get("height") or 0),
                 "duration": 0.0,
+                "file_size": 0,
                 "photographer": item.get("photographer", ""),
                 "source_url": item.get("url", ""),
                 "query_used": query,
             }
         )
     return [item for item in results if item.get("download_url")]
-
-
-def search_pixabay_videos(query: str, per_page: int = 8) -> list[dict]:
-    if not settings.PIXABAY_API_KEY:
-        return []
-    params = {"key": settings.PIXABAY_API_KEY, "q": query, "per_page": per_page, "safesearch": "true"}
-    data = _request_json(f"{PIXABAY_API_URL}/videos/", params=params)
-    results = []
-    for item in data.get("hits", []) if isinstance(data, dict) else []:
-        videos = item.get("videos") or {}
-        best = videos.get("medium") or videos.get("small") or videos.get("large") or {}
-        if not best.get("url"):
-            continue
-        results.append(
-            {
-                "provider": "pixabay",
-                "media_type": "video",
-                "id": str(item.get("id")),
-                "download_url": best.get("url"),
-                "preview_url": item.get("picture_id", ""),
-                "width": int(best.get("width") or 0),
-                "height": int(best.get("height") or 0),
-                "duration": float(item.get("duration") or 0),
-                "photographer": item.get("user", ""),
-                "source_url": item.get("pageURL", ""),
-                "query_used": query,
-            }
-        )
-    return results
 
 
 def search_pixabay_images(query: str, per_page: int = 8) -> list[dict]:
@@ -152,6 +90,7 @@ def search_pixabay_images(query: str, per_page: int = 8) -> list[dict]:
                 "width": int(item.get("imageWidth") or 0),
                 "height": int(item.get("imageHeight") or 0),
                 "duration": 0.0,
+                "file_size": int(item.get("imageSize") or 0),
                 "photographer": item.get("user", ""),
                 "source_url": item.get("pageURL", ""),
                 "query_used": query,
@@ -182,22 +121,3 @@ def _request_json(url: str, headers: dict | None = None, params: dict | None = N
                 continue
             logger.warning("Media search failed for %s: %s", safe_url, exc)
     return {}
-
-
-def _best_pexels_video_file(files: list[dict]) -> dict | None:
-    mp4_files = [item for item in files if item.get("file_type") == "video/mp4" and item.get("link")]
-    if not mp4_files:
-        return None
-    return sorted(mp4_files, key=lambda item: _orientation_score(item) + _resolution_score(item), reverse=True)[0]
-
-
-def _orientation_score(item: dict) -> int:
-    width = int(item.get("width") or 0)
-    height = int(item.get("height") or 0)
-    return 40 if height >= width else 0
-
-
-def _resolution_score(item: dict) -> int:
-    width = int(item.get("width") or 0)
-    height = int(item.get("height") or 0)
-    return min((width * height) // 100_000, 30)
